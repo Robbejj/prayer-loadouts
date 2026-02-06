@@ -230,13 +230,15 @@ public class PrayerLoadoutsPanel extends PluginPanel {
         loadButton.setBackground(ColorScheme.BRAND_ORANGE);
         loadButton.setToolTipText("Load this prayer arrangement");
         loadButton.addActionListener(e -> {
-            boolean success = plugin.loadLoadoutFromPanel(name);
-            if (!success) {
-                JOptionPane.showMessageDialog(this,
-                        "This loadout has no data for your current prayerbook.\nTry saving it again.",
-                        "Load Failed",
-                        JOptionPane.WARNING_MESSAGE);
-            }
+            // Async load - callback handles success/failure
+            plugin.loadLoadoutFromPanel(name, success -> {
+                if (!success) {
+                    JOptionPane.showMessageDialog(this,
+                            "This loadout has no data for your current prayerbook.\nTry saving it again.",
+                            "Load Failed",
+                            JOptionPane.WARNING_MESSAGE);
+                }
+            });
         });
         buttonsPanel.add(loadButton);
 

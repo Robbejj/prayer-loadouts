@@ -1,7 +1,5 @@
 package com.prayerloadouts;
 
-import net.runelite.client.config.ConfigManager;
-
 import javax.inject.Inject;
 import javax.inject.Singleton;
 import java.awt.Toolkit;
@@ -9,19 +7,18 @@ import java.awt.datatransfer.DataFlavor;
 import java.awt.datatransfer.StringSelection;
 import java.awt.datatransfer.UnsupportedFlavorException;
 import java.io.IOException;
-import java.util.Set;
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * Handles export and import of loadouts via the system clipboard.
  */
 @Singleton
 public class LoadoutSerializer {
-    private final ConfigManager configManager;
     private final LoadoutManager loadoutManager;
 
     @Inject
-    public LoadoutSerializer(ConfigManager configManager, LoadoutManager loadoutManager) {
-        this.configManager = configManager;
+    public LoadoutSerializer(LoadoutManager loadoutManager) {
         this.loadoutManager = loadoutManager;
     }
 
@@ -30,48 +27,45 @@ public class LoadoutSerializer {
      * @return true if data was exported, false if loadout has no data
      */
     public boolean exportLoadout(String name) {
-        Set<String> names = loadoutManager.getLoadoutNames();
-        if (!names.contains(name)) {
+        LoadoutData loadout = loadoutManager.getLoadout(name);
+        if (loadout == null) {
             return false;
         }
-
-        String safeKey = loadoutManager.toSafeKey(name);
 
         StringBuilder export = new StringBuilder();
         export.append("PRAYERLOADOUT:").append(name).append("\n");
 
         boolean hasData = false;
         for (int prayerbook = 0; prayerbook <= 1; prayerbook++) {
-            String order = configManager.getConfiguration(
-                    LoadoutManager.CONFIG_GROUP,
-                    "loadout_" + safeKey + "_order_book_" + prayerbook);
+            String order = loadout.getPrayerOrder(prayerbook);
 
             if (order != null && !order.isEmpty()) {
                 hasData = true;
                 export.append("ORDER_").append(prayerbook).append(":").append(order).append("\n");
 
-                String filterPrefix = "loadout_" + safeKey + "_filter_book_" + prayerbook + "_";
-                String[] filterKeys = { "blocklowtier", "allowcombinedtier", "blockhealing",
-                        "blocklacklevel", "blocklocked", "hidefilterbutton" };
-
-                for (String filterKey : filterKeys) {
-                    String value = configManager.getConfiguration(LoadoutManager.CONFIG_GROUP,
-                            filterPrefix + filterKey);
-                    if (value != null) {
-                        export.append("FILTER_").append(prayerbook).append("_").append(filterKey).append(":")
-                                .append(value).append("\n");
-                    }
+                // Export filter settings
+                LoadoutData.FilterSettings filters = loadout.getFilters(prayerbook);
+                if (filters != null) {
+                    export.append("FILTER_").append(prayerbook).append("_blocklowtier:")
+                            .append(filters.getBlockLowTier()).append("\n");
+                    export.append("FILTER_").append(prayerbook).append("_allowcombinedtier:")
+                            .append(filters.getAllowCombinedTier()).append("\n");
+                    export.append("FILTER_").append(prayerbook).append("_blockhealing:")
+                            .append(filters.getBlockHealing()).append("\n");
+                    export.append("FILTER_").append(prayerbook).append("_blocklacklevel:")
+                            .append(filters.getBlockLackLevel()).append("\n");
+                    export.append("FILTER_").append(prayerbook).append("_blocklocked:")
+                            .append(filters.getBlockLocked()).append("\n");
+                    export.append("FILTER_").append(prayerbook).append("_hidefilterbutton:")
+                            .append(filters.getHideFilterButton()).append("\n");
                 }
 
-                String hiddenPrefix = LoadoutManager.CONFIG_GROUP + ".loadout_" + safeKey + "_"
-                        + LoadoutManager.PRAYER_HIDDEN_KEY_PREFIX + prayerbook;
-                for (String key : configManager.getConfigurationKeys(hiddenPrefix)) {
-                    String[] parts = key.split("\\.", 2);
-                    if (parts.length == 2) {
-                        String value = configManager.getConfiguration(parts[0], parts[1]);
-                        String prayerKey = parts[1].substring(("loadout_" + safeKey + "_").length());
-                        export.append("HIDDEN_").append(prayerbook).append("_").append(prayerKey).append(":")
-                                .append(value).append("\n");
+                // Export hidden prayers
+                Map<String, String> hiddenPrayers = loadout.getHiddenPrayers(prayerbook);
+                if (hiddenPrayers != null) {
+                    for (Map.Entry<String, String> entry : hiddenPrayers.entrySet()) {
+                        export.append("HIDDEN_").append(prayerbook).append("_").append(entry.getKey())
+                                .append(":").append(entry.getValue()).append("\n");
                     }
                 }
             }
@@ -135,7 +129,11 @@ public class LoadoutSerializer {
             importName = importName.trim();
         }
 
-        String safeKey = loadoutManager.toSafeKey(importName);
+        // Create new LoadoutData
+        LoadoutData loadout = new LoadoutData(importName);
+
+        // Temporary storage for filter values during parsing
+        Map<Integer, int[]> filterValues = new HashMap<>();
 
         // Parse and import loadout data
         for (int i = 1; i < lines.length; i++) {
@@ -155,10 +153,7 @@ public class LoadoutSerializer {
             try {
                 if (key.startsWith("ORDER_")) {
                     int prayerbook = Integer.parseInt(key.substring("ORDER_".length()));
-                    configManager.setConfiguration(
-                            LoadoutManager.CONFIG_GROUP,
-                            "loadout_" + safeKey + "_order_book_" + prayerbook,
-                            value);
+                    loadout.setPrayerOrder(prayerbook, value);
                 } else if (key.startsWith("FILTER_")) {
                     String rest = key.substring("FILTER_".length());
                     int underscoreIdx = rest.indexOf('_');
@@ -167,21 +162,45 @@ public class LoadoutSerializer {
                     }
                     int prayerbook = Integer.parseInt(rest.substring(0, underscoreIdx));
                     String filterKey = rest.substring(underscoreIdx + 1);
-                    configManager.setConfiguration(
-                            LoadoutManager.CONFIG_GROUP,
-                            "loadout_" + safeKey + "_filter_book_" + prayerbook + "_" + filterKey,
-                            value);
+                    int filterValue = Integer.parseInt(value);
+
+                    // Store filter values temporarily
+                    int[] filters = filterValues.computeIfAbsent(prayerbook, k -> new int[6]);
+                    switch (filterKey) {
+                        case "blocklowtier":
+                            filters[0] = filterValue;
+                            break;
+                        case "allowcombinedtier":
+                            filters[1] = filterValue;
+                            break;
+                        case "blockhealing":
+                            filters[2] = filterValue;
+                            break;
+                        case "blocklacklevel":
+                            filters[3] = filterValue;
+                            break;
+                        case "blocklocked":
+                            filters[4] = filterValue;
+                            break;
+                        case "hidefilterbutton":
+                            filters[5] = filterValue;
+                            break;
+                    }
                 } else if (key.startsWith("HIDDEN_")) {
                     String rest = key.substring("HIDDEN_".length());
                     int underscoreIdx = rest.indexOf('_');
                     if (underscoreIdx == -1) {
                         continue;
                     }
+                    int prayerbook = Integer.parseInt(rest.substring(0, underscoreIdx));
                     String hiddenKey = rest.substring(underscoreIdx + 1);
-                    configManager.setConfiguration(
-                            LoadoutManager.CONFIG_GROUP,
-                            "loadout_" + safeKey + "_" + hiddenKey,
-                            value);
+
+                    Map<String, String> hiddenPrayers = loadout.getHiddenPrayers(prayerbook);
+                    if (hiddenPrayers.isEmpty()) {
+                        hiddenPrayers = new HashMap<>();
+                    }
+                    hiddenPrayers.put(hiddenKey, value);
+                    loadout.setHiddenPrayers(prayerbook, hiddenPrayers);
                 }
             } catch (NumberFormatException e) {
                 // Skip invalid lines
@@ -189,14 +208,17 @@ public class LoadoutSerializer {
             }
         }
 
-        configManager.setConfiguration(
-                LoadoutManager.CONFIG_GROUP,
-                "loadout_" + safeKey + "_displayname",
-                importName);
+        // Convert temporary filter arrays to FilterSettings objects
+        for (Map.Entry<Integer, int[]> entry : filterValues.entrySet()) {
+            int[] f = entry.getValue();
+            LoadoutData.FilterSettings filters = new LoadoutData.FilterSettings(
+                    f[0], f[1], f[2], f[3], f[4], f[5]
+            );
+            loadout.setFilters(entry.getKey(), filters);
+        }
 
-        Set<String> names = loadoutManager.getLoadoutNames();
-        names.add(importName);
-        loadoutManager.saveLoadoutNames(names);
+        // Save the loadout
+        loadoutManager.saveLoadoutData(importName, loadout);
         return true;
     }
 }

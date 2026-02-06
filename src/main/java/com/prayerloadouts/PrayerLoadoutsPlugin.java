@@ -22,6 +22,7 @@ import java.awt.image.BufferedImage;
 import java.util.Set;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 
 @PluginDependency(PrayerPlugin.class)
 @PluginDescriptor(name = "Prayer Loadouts", description = "Save and load named prayer book arrangements", tags = {
@@ -99,7 +100,7 @@ public class PrayerLoadoutsPlugin extends Plugin {
                 executor.schedule(() -> clientThread.invokeLater(() -> {
                     // Update cache first to get current state
                     loadoutManager.updateCachedFilters();
-                    
+
                     String lastLoadout = loadoutManager.getLastLoadoutName();
                     if (lastLoadout != null && !lastLoadout.isEmpty()
                             && loadoutManager.getLoadoutNames().contains(lastLoadout)) {
@@ -130,7 +131,7 @@ public class PrayerLoadoutsPlugin extends Plugin {
     @Subscribe
     public void onVarbitChanged(VarbitChanged event) {
         int varbitId = event.getVarbitId();
-        
+
         // Update cache when filter varbits change (keeps active loadout detection accurate)
         if (varbitId == VarbitID.PRAYER_FILTER_BLOCKLOWTIER ||
             varbitId == VarbitID.PRAYER_FILTER_ALLOWCOMBINEDTIER ||
@@ -138,7 +139,7 @@ public class PrayerLoadoutsPlugin extends Plugin {
             varbitId == VarbitID.PRAYER_FILTER_BLOCKLACKLEVEL ||
             varbitId == VarbitID.PRAYER_FILTER_BLOCKLOCKED ||
             varbitId == VarbitID.PRAYER_HIDEFILTERBUTTON) {
-            
+
             clientThread.invokeLater(() -> {
                 loadoutManager.updateCachedFilters();
                 refreshPanel();
@@ -171,30 +172,21 @@ public class PrayerLoadoutsPlugin extends Plugin {
     }
 
     /**
-     * Loads a loadout. Returns false if no data exists for current prayerbook.
-     * Uses a CountDownLatch to wait for the client thread result.
+     * Loads a loadout asynchronously. Calls the callback with true on success, false on failure.
+     * This method does not block the Swing EDT.
      */
-    public boolean loadLoadoutFromPanel(String name) {
-        final boolean[] success = {false};
-        final java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
-        
+    public void loadLoadoutFromPanel(String name, Consumer<Boolean> callback) {
         clientThread.invokeLater(() -> {
-            try {
-                // Pass a callback that refreshes the panel after cache is updated
-                success[0] = loadoutManager.loadLoadout(name, this::refreshPanel);
-            } finally {
-                latch.countDown();
+            boolean success = loadoutManager.loadLoadout(name, this::refreshPanel);
+            if (!success) {
+                // Refresh panel even on failure
+                refreshPanel();
+            }
+            // Notify the caller of the result on the Swing EDT
+            if (callback != null) {
+                javax.swing.SwingUtilities.invokeLater(() -> callback.accept(success));
             }
         });
-        
-        try {
-            latch.await(2, java.util.concurrent.TimeUnit.SECONDS);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            return false;
-        }
-        
-        return success[0];
     }
 
     public boolean exportLoadoutFromPanel(String name) {

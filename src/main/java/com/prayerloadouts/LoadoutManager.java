@@ -1,5 +1,7 @@
 package com.prayerloadouts;
 
+import com.google.gson.Gson;
+import com.google.gson.reflect.TypeToken;
 import net.runelite.api.Client;
 import net.runelite.api.GameState;
 import net.runelite.api.gameval.VarbitID;
@@ -7,13 +9,14 @@ import net.runelite.client.config.ConfigManager;
 
 import javax.inject.Inject;
 import javax.inject.Singleton;
-import java.util.Arrays;
-import java.util.HashSet;
+import java.lang.reflect.Type;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Set;
-import java.util.stream.Collectors;
 
 /**
  * Manages loadout operations: save, load, delete, rename, and active detection.
+ * All loadouts are stored in a single JSON config key.
  */
 @Singleton
 public class LoadoutManager {
@@ -21,22 +24,26 @@ public class LoadoutManager {
     static final String PRAYER_CONFIG_GROUP = "prayer";
     static final String PRAYER_ORDER_KEY_PREFIX = "prayer_order_book_";
     static final String PRAYER_HIDDEN_KEY_PREFIX = "prayer_hidden_book_";
-    private static final String LOADOUT_NAMES_KEY = "loadout_names";
+    private static final String LOADOUTS_KEY = "loadouts";
     static final String LAST_LOADOUT_KEY = "last_loadout";
+
+    private static final Type LOADOUTS_TYPE = new TypeToken<Map<String, LoadoutData>>() {}.getType();
 
     private final Client client;
     private final ConfigManager configManager;
     private final PrayerStateManager prayerStateManager;
+    private final Gson gson;
 
     private volatile String cachedFilterFingerprint = "";
     private volatile int cachedPrayerbook = 0;
 
     @Inject
     public LoadoutManager(Client client, ConfigManager configManager,
-            PrayerStateManager prayerStateManager) {
+            PrayerStateManager prayerStateManager, Gson gson) {
         this.client = client;
         this.configManager = configManager;
         this.prayerStateManager = prayerStateManager;
+        this.gson = gson;
     }
 
     public void updateCachedFilters() {
@@ -54,24 +61,43 @@ public class LoadoutManager {
                 + client.getVarbitValue(VarbitID.PRAYER_HIDEFILTERBUTTON);
     }
 
-    public Set<String> getLoadoutNames() {
-        String names = configManager.getConfiguration(CONFIG_GROUP, LOADOUT_NAMES_KEY);
-        if (names == null || names.isEmpty()) {
-            return new HashSet<>();
+    /**
+     * Gets all loadouts from config.
+     */
+    public Map<String, LoadoutData> getAllLoadouts() {
+        String json = configManager.getConfiguration(CONFIG_GROUP, LOADOUTS_KEY);
+        if (json == null || json.isEmpty()) {
+            return new HashMap<>();
         }
-        return Arrays.stream(names.split(","))
-                .map(String::trim)
-                .filter(s -> !s.isEmpty())
-                .collect(Collectors.toSet());
+        try {
+            Map<String, LoadoutData> loadouts = gson.fromJson(json, LOADOUTS_TYPE);
+            return loadouts != null ? loadouts : new HashMap<>();
+        } catch (Exception e) {
+            return new HashMap<>();
+        }
     }
 
-    void saveLoadoutNames(Set<String> names) {
-        if (names.isEmpty()) {
-            configManager.unsetConfiguration(CONFIG_GROUP, LOADOUT_NAMES_KEY);
+    /**
+     * Saves all loadouts to config.
+     */
+    private void saveAllLoadouts(Map<String, LoadoutData> loadouts) {
+        if (loadouts.isEmpty()) {
+            configManager.unsetConfiguration(CONFIG_GROUP, LOADOUTS_KEY);
         } else {
-            String joined = String.join(",", names);
-            configManager.setConfiguration(CONFIG_GROUP, LOADOUT_NAMES_KEY, joined);
+            String json = gson.toJson(loadouts, LOADOUTS_TYPE);
+            configManager.setConfiguration(CONFIG_GROUP, LOADOUTS_KEY, json);
         }
+    }
+
+    /**
+     * Gets a single loadout by name.
+     */
+    public LoadoutData getLoadout(String name) {
+        return getAllLoadouts().get(name);
+    }
+
+    public Set<String> getLoadoutNames() {
+        return getAllLoadouts().keySet();
     }
 
     String toSafeKey(String name) {
@@ -88,33 +114,37 @@ public class LoadoutManager {
         }
 
         int prayerbook = client.getVarbitValue(VarbitID.PRAYERBOOK);
-        String safeKey = toSafeKey(name);
 
+        // Get or create loadout data
+        Map<String, LoadoutData> loadouts = getAllLoadouts();
+        LoadoutData loadout = loadouts.getOrDefault(name, new LoadoutData(name));
+        loadout.setDisplayName(name);
+
+        // Save prayer order
         String currentOrder = configManager.getConfiguration(
                 PRAYER_CONFIG_GROUP,
                 PRAYER_ORDER_KEY_PREFIX + prayerbook);
-
-        // Save order (use "DEFAULT" if no custom order exists)
         String orderValue = (currentOrder == null || currentOrder.isEmpty()) ? "DEFAULT" : currentOrder;
-        configManager.setConfiguration(
-                CONFIG_GROUP,
-                "loadout_" + safeKey + "_order_book_" + prayerbook,
-                orderValue);
+        loadout.setPrayerOrder(prayerbook, orderValue);
 
-        // Save display name
-        configManager.setConfiguration(
-                CONFIG_GROUP,
-                "loadout_" + safeKey + "_displayname",
-                name);
+        // Save filter settings
+        LoadoutData.FilterSettings filters = new LoadoutData.FilterSettings(
+                client.getVarbitValue(VarbitID.PRAYER_FILTER_BLOCKLOWTIER),
+                client.getVarbitValue(VarbitID.PRAYER_FILTER_ALLOWCOMBINEDTIER),
+                client.getVarbitValue(VarbitID.PRAYER_FILTER_BLOCKHEALING),
+                client.getVarbitValue(VarbitID.PRAYER_FILTER_BLOCKLACKLEVEL),
+                client.getVarbitValue(VarbitID.PRAYER_FILTER_BLOCKLOCKED),
+                client.getVarbitValue(VarbitID.PRAYER_HIDEFILTERBUTTON)
+        );
+        loadout.setFilters(prayerbook, filters);
 
-        // Save hidden prayers and filter settings
-        prayerStateManager.saveHiddenPrayers(safeKey, prayerbook);
-        prayerStateManager.savePrayerFilters(safeKey, prayerbook);
+        // Save hidden prayers
+        Map<String, String> hiddenPrayers = prayerStateManager.getCurrentHiddenPrayers(prayerbook);
+        loadout.setHiddenPrayers(prayerbook, hiddenPrayers);
 
-        // Add to loadout names list
-        Set<String> names = getLoadoutNames();
-        names.add(name);
-        saveLoadoutNames(names);
+        // Save to config
+        loadouts.put(name, loadout);
+        saveAllLoadouts(loadouts);
 
         // Update last loaded loadout
         configManager.setConfiguration(CONFIG_GROUP, LAST_LOADOUT_KEY, name);
@@ -139,16 +169,18 @@ public class LoadoutManager {
             return false;
         }
 
-        int prayerbook = client.getVarbitValue(VarbitID.PRAYERBOOK);
-        String safeKey = toSafeKey(name);
-
-        String savedOrder = configManager.getConfiguration(
-                CONFIG_GROUP,
-                "loadout_" + safeKey + "_order_book_" + prayerbook);
-
-        if (savedOrder == null || savedOrder.isEmpty()) {
+        LoadoutData loadout = getLoadout(name);
+        if (loadout == null) {
             return false;
         }
+
+        int prayerbook = client.getVarbitValue(VarbitID.PRAYERBOOK);
+
+        if (!loadout.hasPrayerOrder(prayerbook)) {
+            return false;
+        }
+
+        String savedOrder = loadout.getPrayerOrder(prayerbook);
 
         // Restore prayer order
         if ("DEFAULT".equals(savedOrder)) {
@@ -160,11 +192,12 @@ public class LoadoutManager {
                     savedOrder);
         }
 
-        // Restore hidden prayers and filters
-        prayerStateManager.loadHiddenPrayers(safeKey, prayerbook);
-        // Load filters and update cache after varbits are set
-        // Chain the completion callback to run after cache is updated
-        prayerStateManager.loadPrayerFilters(safeKey, prayerbook, () -> {
+        // Restore hidden prayers
+        prayerStateManager.loadHiddenPrayers(loadout.getHiddenPrayers(prayerbook), prayerbook);
+
+        // Load filters and chain the completion callback
+        LoadoutData.FilterSettings filters = loadout.getFilters(prayerbook);
+        prayerStateManager.loadPrayerFilters(filters, () -> {
             updateCachedFilters();
             if (onComplete != null) {
                 onComplete.run();
@@ -181,24 +214,13 @@ public class LoadoutManager {
             return;
         }
 
-        Set<String> names = getLoadoutNames();
-        if (!names.contains(name)) {
+        Map<String, LoadoutData> loadouts = getAllLoadouts();
+        if (!loadouts.containsKey(name)) {
             return;
         }
 
-        // Delete all configuration keys for this loadout
-        String safeKey = toSafeKey(name);
-        String prefix = CONFIG_GROUP + ".loadout_" + safeKey;
-        for (String key : configManager.getConfigurationKeys(prefix)) {
-            String[] parts = key.split("\\.", 2);
-            if (parts.length == 2) {
-                configManager.unsetConfiguration(parts[0], parts[1]);
-            }
-        }
-
-        // Remove from loadout names list
-        names.remove(name);
-        saveLoadoutNames(names);
+        loadouts.remove(name);
+        saveAllLoadouts(loadouts);
     }
 
     public void renameLoadout(String oldName, String newName) {
@@ -206,36 +228,15 @@ public class LoadoutManager {
             return;
         }
 
-        Set<String> names = getLoadoutNames();
-        if (!names.contains(oldName) || names.contains(newName)) {
+        Map<String, LoadoutData> loadouts = getAllLoadouts();
+        if (!loadouts.containsKey(oldName) || loadouts.containsKey(newName)) {
             return;
         }
 
-        // Rename all configuration keys
-        String oldSafeKey = toSafeKey(oldName);
-        String newSafeKey = toSafeKey(newName);
-
-        String prefix = CONFIG_GROUP + ".loadout_" + oldSafeKey;
-        for (String key : configManager.getConfigurationKeys(prefix)) {
-            String[] parts = key.split("\\.", 2);
-            if (parts.length == 2) {
-                String value = configManager.getConfiguration(parts[0], parts[1]);
-                String newKey = parts[1].replaceFirst("loadout_" + oldSafeKey, "loadout_" + newSafeKey);
-                configManager.setConfiguration(CONFIG_GROUP, newKey, value);
-                configManager.unsetConfiguration(parts[0], parts[1]);
-            }
-        }
-
-        // Update display name
-        configManager.setConfiguration(
-                CONFIG_GROUP,
-                "loadout_" + newSafeKey + "_displayname",
-                newName);
-
-        // Update loadout names list
-        names.remove(oldName);
-        names.add(newName);
-        saveLoadoutNames(names);
+        LoadoutData loadout = loadouts.remove(oldName);
+        loadout.setDisplayName(newName);
+        loadouts.put(newName, loadout);
+        saveAllLoadouts(loadouts);
     }
 
     public String getActiveLoadoutName(boolean isLoggedIn) {
@@ -248,36 +249,38 @@ public class LoadoutManager {
                 PRAYER_CONFIG_GROUP,
                 PRAYER_ORDER_KEY_PREFIX + prayerbook);
         boolean isDefaultOrder = (currentOrder == null || currentOrder.isEmpty());
-        String currentHiddenFingerprint = getHiddenPrayersFingerprint(PRAYER_CONFIG_GROUP,
-                PRAYER_HIDDEN_KEY_PREFIX + prayerbook);
+        String currentHiddenFingerprint = prayerStateManager.getHiddenPrayersFingerprint(prayerbook);
         String currentFilterFingerprint = cachedFilterFingerprint;
 
         // First, check if the last loaded loadout still matches (prioritize it)
         String lastLoadout = getLastLoadoutName();
-        if (lastLoadout != null && getLoadoutNames().contains(lastLoadout)) {
-            if (loadoutMatchesCurrent(lastLoadout, prayerbook, isDefaultOrder, currentOrder,
+        Map<String, LoadoutData> loadouts = getAllLoadouts();
+
+        if (lastLoadout != null && loadouts.containsKey(lastLoadout)) {
+            if (loadoutMatchesCurrent(loadouts.get(lastLoadout), prayerbook, isDefaultOrder, currentOrder,
                     currentHiddenFingerprint, currentFilterFingerprint)) {
                 return lastLoadout;
             }
         }
 
         // Fall back to finding any matching loadout
-        for (String name : getLoadoutNames()) {
-            if (loadoutMatchesCurrent(name, prayerbook, isDefaultOrder, currentOrder,
+        for (Map.Entry<String, LoadoutData> entry : loadouts.entrySet()) {
+            if (loadoutMatchesCurrent(entry.getValue(), prayerbook, isDefaultOrder, currentOrder,
                     currentHiddenFingerprint, currentFilterFingerprint)) {
-                return name;
+                return entry.getKey();
             }
         }
 
         return null;
     }
 
-    private boolean loadoutMatchesCurrent(String name, int prayerbook, boolean isDefaultOrder,
+    private boolean loadoutMatchesCurrent(LoadoutData loadout, int prayerbook, boolean isDefaultOrder,
             String currentOrder, String currentHiddenFingerprint, String currentFilterFingerprint) {
-        String safeKey = toSafeKey(name);
-        String savedOrder = configManager.getConfiguration(
-                CONFIG_GROUP,
-                "loadout_" + safeKey + "_order_book_" + prayerbook);
+
+        String savedOrder = loadout.getPrayerOrder(prayerbook);
+        if (savedOrder == null) {
+            return false;
+        }
 
         boolean orderMatches = isDefaultOrder
                 ? "DEFAULT".equals(savedOrder)
@@ -287,51 +290,25 @@ public class LoadoutManager {
             return false;
         }
 
-        String savedHiddenFingerprint = getHiddenPrayersFingerprint(
-                CONFIG_GROUP,
-                "loadout_" + safeKey + "_" + PRAYER_HIDDEN_KEY_PREFIX + prayerbook);
-
+        String savedHiddenFingerprint = getHiddenPrayersFingerprint(loadout.getHiddenPrayers(prayerbook));
         if (!currentHiddenFingerprint.equals(savedHiddenFingerprint)) {
             return false;
         }
 
-        String savedFilterFingerprint = getSavedFilterFingerprint(safeKey, prayerbook);
+        LoadoutData.FilterSettings filters = loadout.getFilters(prayerbook);
+        String savedFilterFingerprint = filters != null ? filters.toFingerprint() : "0,0,0,0,0,0";
         return currentFilterFingerprint.equals(savedFilterFingerprint);
     }
 
-    private String getSavedFilterFingerprint(String safeKey, int prayerbook) {
-        String prefix = "loadout_" + safeKey + "_filter_book_" + prayerbook + "_";
-
-        String blockLowTier = configManager.getConfiguration(CONFIG_GROUP, prefix + "blocklowtier");
-        String allowCombinedTier = configManager.getConfiguration(CONFIG_GROUP, prefix + "allowcombinedtier");
-        String blockHealing = configManager.getConfiguration(CONFIG_GROUP, prefix + "blockhealing");
-        String blockLackLevel = configManager.getConfiguration(CONFIG_GROUP, prefix + "blocklacklevel");
-        String blockLocked = configManager.getConfiguration(CONFIG_GROUP, prefix + "blocklocked");
-        String hideFilterButton = configManager.getConfiguration(CONFIG_GROUP, prefix + "hidefilterbutton");
-
-        // Return fingerprint with defaults (0) for missing values
-        return (blockLowTier != null ? blockLowTier : "0") + ","
-                + (allowCombinedTier != null ? allowCombinedTier : "0") + ","
-                + (blockHealing != null ? blockHealing : "0") + ","
-                + (blockLackLevel != null ? blockLackLevel : "0") + ","
-                + (blockLocked != null ? blockLocked : "0") + ","
-                + (hideFilterButton != null ? hideFilterButton : "0");
-    }
-
-    private String getHiddenPrayersFingerprint(String configGroup, String keyPrefix) {
-        StringBuilder sb = new StringBuilder();
-        java.util.List<String> keys = configManager.getConfigurationKeys(configGroup + "." + keyPrefix);
-        java.util.Collections.sort(keys);
-
-        for (String key : keys) {
-            String[] parts = key.split("\\.", 2);
-            if (parts.length == 2) {
-                String value = configManager.getConfiguration(parts[0], parts[1]);
-                String prayerPart = parts[1].substring(keyPrefix.length());
-                sb.append(prayerPart).append("=").append(value).append(";");
-            }
+    private String getHiddenPrayersFingerprint(Map<String, String> hiddenPrayers) {
+        if (hiddenPrayers == null || hiddenPrayers.isEmpty()) {
+            return "";
         }
 
+        StringBuilder sb = new StringBuilder();
+        hiddenPrayers.entrySet().stream()
+                .sorted(Map.Entry.comparingByKey())
+                .forEach(entry -> sb.append(entry.getKey()).append("=").append(entry.getValue()).append(";"));
         return sb.toString();
     }
 
@@ -349,4 +326,12 @@ public class LoadoutManager {
         configManager.unsetConfiguration(CONFIG_GROUP, LAST_LOADOUT_KEY);
     }
 
+    /**
+     * Saves a loadout directly (used by import).
+     */
+    public void saveLoadoutData(String name, LoadoutData loadout) {
+        Map<String, LoadoutData> loadouts = getAllLoadouts();
+        loadouts.put(name, loadout);
+        saveAllLoadouts(loadouts);
+    }
 }
