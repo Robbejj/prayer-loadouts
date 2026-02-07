@@ -2,7 +2,7 @@
 
 A RuneLite plugin that allows you to save and load named prayer book arrangements.
 
-![loadouts](docs/loadouts.gif)
+![loadouts](docs/loadouts.webp)
 ## Features
 
 - **Save loadouts** - Save your current prayer order, hidden prayers, and filter settings as a named loadout
