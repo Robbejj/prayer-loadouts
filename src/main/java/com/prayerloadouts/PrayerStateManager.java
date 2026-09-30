@@ -25,21 +25,26 @@ public class PrayerStateManager {
     private final ClientThread clientThread;
     private final ConfigManager configManager;
     private final PluginManager pluginManager;
-    private final PrayerPlugin prayerPlugin;
+    private PrayerPlugin prayerPlugin;
 
     @Inject
     public PrayerStateManager(Client client, ClientThread clientThread,
-            ConfigManager configManager, PluginManager pluginManager,
-            PrayerPlugin prayerPlugin) {
+            ConfigManager configManager, PluginManager pluginManager) {
         this.client = client;
         this.clientThread = clientThread;
         this.configManager = configManager;
         this.pluginManager = pluginManager;
-        this.prayerPlugin = prayerPlugin;
     }
 
     public boolean isPrayerPluginEnabled() {
-        return pluginManager.isPluginEnabled(prayerPlugin);
+        if (prayerPlugin == null) {
+            prayerPlugin = pluginManager.getPlugins().stream()
+                    .filter(PrayerPlugin.class::isInstance)
+                    .map(PrayerPlugin.class::cast)
+                    .findFirst()
+                    .orElse(null);
+        }
+        return prayerPlugin != null && pluginManager.isPluginEnabled(prayerPlugin);
     }
 
     /**

@@ -11,7 +11,6 @@ import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.events.PluginChanged;
 import net.runelite.client.game.SkillIconManager;
 import net.runelite.client.plugins.Plugin;
-import net.runelite.client.plugins.PluginDependency;
 import net.runelite.client.plugins.PluginDescriptor;
 import net.runelite.client.plugins.prayer.PrayerPlugin;
 import net.runelite.client.ui.ClientToolbar;
@@ -24,7 +23,6 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
-@PluginDependency(PrayerPlugin.class)
 @PluginDescriptor(name = "Prayer Loadouts", description = "Save and load named prayer book arrangements", tags = {
         "prayer", "loadout", "reorder", "preset" })
 public class PrayerLoadoutsPlugin extends Plugin {
