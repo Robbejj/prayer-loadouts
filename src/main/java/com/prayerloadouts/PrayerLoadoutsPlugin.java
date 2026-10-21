@@ -87,6 +87,13 @@ public class PrayerLoadoutsPlugin extends Plugin {
     @Subscribe
     public void onGameStateChanged(GameStateChanged event) {
         GameState state = event.getGameState();
+
+        if (state == GameState.LOADING
+                || state == GameState.HOPPING
+                || state == GameState.CONNECTION_LOST) {
+            return;
+        }
+
         boolean wasLoggedIn = loggedIn;
         loggedIn = (state == GameState.LOGGED_IN);
 

@@ -58,12 +58,12 @@ public class PrayerLoadoutsPanel extends PluginPanel {
         // Buttons on the right
         JPanel buttonsPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT, 5, 0));
         buttonsPanel.setBackground(ColorScheme.DARK_GRAY_COLOR);
-        
+
         JButton refreshButton = new JButton("↻");
         refreshButton.setToolTipText("Refresh loadout list");
         refreshButton.addActionListener(e -> rebuild());
         buttonsPanel.add(refreshButton);
-        
+
         section.add(buttonsPanel, BorderLayout.EAST);
 
         return section;
